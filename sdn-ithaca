@@ -1,0 +1,23 @@
+# Rewrite ARP packets for 156.100, 157.100, ... which aren't actual hosts, but should answer from the
+# real hosts 56.100 and 57.100
+arp nw_dst=192.168.156.100 actions=mod_nw_dst=192.168.56.100,output:1
+
+# In case we decide to handle broadcasts again.
+# in_port=1,dl_dst=ff:ff:ff:ff:ff:ff actions=flood
+
+# This is the rule that'll get computed by utilization statistics.  It tells which path to send the packet.
+# We also really should add a rule that replies to an ARP packet with the proper Ethernet interface to send
+# this to.  But that must be done by a controller, since you can't construct an ARP reply packet with pure Openflow.
+# (Alternatively, we can doctor the ARP reply that comes back.  Maybe).  
+ip,in_port=1,nw_dst=192.168.57.100 actions=mod_nw_src=192.168.156.100,mod_dl_dst=00:11:22:cc:cc:c1,mod_nw_dst:192.168.157.100,output:2
+
+# For pings using a direct path.  We will collect utilization statistics using these.
+ip,in_port=1,nw_dst=192.168.157.100 actions=mod_nw_src=192.168.156.100,output:2
+ip,in_port=1,nw_dst=192.168.159.100 actions=mod_nw_src=192.168.158.100,output:3
+ip,in_port=1,nw_dst=192.168.161.100 actions=mod_nw_src=192.168.160.100,output:4
+
+# For replies, return to the one-and-only interface
+ip,in_port=2,nw_dst=192.168.156.100 actions=mod_nw_dst:192.168.56.100,output:1
+ip,in_port=3,nw_dst=192.168.158.100 actions=mod_nw_dst:192.168.56.100,output:1
+ip,in_port=4,nw_dst=192.168.160.100 actions=mod_nw_dst:192.168.56.100,output:1
+
