@@ -54,7 +54,7 @@ class CoscinSwitchApp(frenetic.App):
     frenetic.App.__init__(self) 
 
     f = open(config_file, "r")
-    self.config = json.load(f)
+    self.coscin_config = json.load(f)
     f.close()
 
   ##################################
@@ -76,13 +76,13 @@ class CoscinSwitchApp(frenetic.App):
 
   def dpid_to_switch(self, dpid):
     for sw in ["ithaca", "nyc"]:
-      if dpid == self.config[sw]["dpid"]:
+      if dpid == self.coscin_config[sw]["dpid"]:
         return sw
     return "UKNOWN"
 
   def switch_to_dpid(self, sw):
-    if sw in self.config:
-      return self.config[sw]["dpid"]
+    if sw in self.coscin_config:
+      return self.coscin_config[sw]["dpid"]
     else:
       return 0
 
@@ -170,13 +170,13 @@ class CoscinSwitchApp(frenetic.App):
     logging.info("Learning: "+mac+"/"+src_ip+" attached to ( "+switch+", "+str(port)+" )")
     self.hosts[mac] = (switch, port)
     # TODO: Guard against learning a port twice
-    host_portion = self.host_of_ip(src_ip, self.config[switch]["network"])
+    host_portion = self.host_of_ip(src_ip, self.coscin_config[switch]["network"])
     self.endhosts[switch].append( (host_portion, port, mac, src_ip) )
     self.arp_cache[src_ip] = (switch, port, mac)
     self.unlearned_ports[switch].remove(port)
 
   def gateway_ip(self, switch):
-    return self.ip_for_network(self.config[switch]["network"], 1)
+    return self.ip_for_network(self.coscin_config[switch]["network"], 1)
 
   def send_to_controller(self):
     return Mod(Location(Pipe("coscin_switch_app")))
@@ -208,7 +208,11 @@ class CoscinSwitchApp(frenetic.App):
     return Test(IP4Dst(self.ip_for_network(ip_net, ip_host)))
 
   def dest_real_net(self, switch, ip_host):
-    return self.is_dest(self.config[switch]["network"], ip_host)
+    return self.is_dest(self.coscin_config[switch]["network"], ip_host)
+
+  def to_dest_net(self, net_and_mask):
+    (net, mask) = self.net_mask(net_and_mask)
+    return Test(IP4Dst(net,mask))
 
   def is_ip_from_to(self, src_ip, dest_ip):
     return self.is_ip() & Test(IP4Src(src_ip)) & Test(IP4Dst(dest_ip))
@@ -234,6 +238,8 @@ class CoscinSwitchApp(frenetic.App):
     if self.state == self.STATE_NORMAL_OPERATION:
       self.update(self.policy())
     else:
+      # Turn on remove_tail_drops to get around issue 463
+      #self.config( CompilerOptions("empty", "IP4Dst < EthType < Location < IP4Src < Switch", True, False, True) )
       self.current_switches(callback=handle_current_switches) 
 
   def packet_in(self, dpid, port, payload):
@@ -281,7 +287,7 @@ class CoscinSwitchApp(frenetic.App):
     logging.info("Received "+p.src_ip+" -> ("+switch+", "+str(port)+") -> "+p.dst_ip)
     self.unlearned_ports[switch].remove(port)
     self.arp_cache[p.src_ip] = (switch, port, p.src_mac)
-    if len(self.arp_cache) >= len(self.config["alternate_paths"]) * len(self.switches):
+    if len(self.arp_cache) >= len(self.coscin_config["alternate_paths"]) * len(self.switches):
       self.normal_mode()
 
   def router_learning_policy(self):
@@ -293,11 +299,11 @@ class CoscinSwitchApp(frenetic.App):
     self.state = self.STATE_ROUTER_LEARNING
     # Send out ARP packets for all router interfaces to learn their mac addresses.  The
     # packet_in_router will handle the replies as they arrive
-    for path in self.config["alternate_paths"]:
-      if "ithaca" in self.config:
+    for path in self.coscin_config["alternate_paths"]:
+      if "ithaca" in self.coscin_config:
         ithaca_router_net = path["ithaca"]
         self.send_arp_request_router_interface("ithaca", ithaca_router_net)
-      if "nyc" in self.config:
+      if "nyc" in self.coscin_config:
         nyc_router_net = path["nyc"] 
         self.send_arp_request_router_interface("nyc", nyc_router_net)
 
@@ -321,7 +327,7 @@ class CoscinSwitchApp(frenetic.App):
       # And we capture ARP requests for the alternate paths.  These will always be for 
       # hosts that have no real estate on the imaginary link, as in 192.168.156.100 along 
       # the 192.168.156.* imaginary network.  This will be translated to the real net 192.168.56.100
-      for ap in self.config["alternate_paths"]:
+      for ap in self.coscin_config["alternate_paths"]:
         (net, mask) = self.net_mask(ap[switch])
         policies.append(Filter(self.at_switch(switch) & self.is_arp() & Test(IP4Dst(net,mask))) >> self.send_to_controller())
 
@@ -330,8 +336,8 @@ class CoscinSwitchApp(frenetic.App):
       # These will get mapped to their actual host address once they've travelled through 
       # the NYC<->Ithaca path an["ithaca","nyc"] destination net
       #for endhost in self.endhosts[switch]:
-      #  for path in self.config["alternate_paths"]:
-      #    dest_net = self.config[switch]["network"]
+      #  for path in self.coscin_config["alternate_paths"]:
+      #    dest_net = self.coscin_config[switch]["network"]
       #    (host, _ , _) = endhost
       #    policies.append( \
       #      Filter(self.at_opposite_switch(switch) & self.is_arp() & self.is_dest(dest_net, host)) \
@@ -349,7 +355,7 @@ class CoscinSwitchApp(frenetic.App):
       for endhost in self.endhosts[switch]:
         (host, host_port, host_mac, host_ip) = endhost
         opposite_switch = "nyc" if (switch=="ithaca") else "ithaca"
-        (dest_net, dest_mask) = self.net_mask(self.config[opposite_switch]["network"])
+        (dest_net, dest_mask) = self.net_mask(self.coscin_config[opposite_switch]["network"])
         # logging.info("(dest_net,dest_mask) = ("+dest_net+","+str(dest_mask)+")")
         # Note we really don't have to test for source IP, but it's extra security
         policies.append(Filter( \
@@ -401,12 +407,26 @@ class CoscinSwitchApp(frenetic.App):
       Test(IP4Dst(dest_ip))
     ) >> output_actions 
 
-  def direct_route_policy(self, switch_id, new_port, dest_ip, renumber_src_ip):
-    output_actions = Seq([
-      Mod(IP4Src(renumber_src_ip)), 
-      Mod(Location(Physical(new_port)))
-    ]) 
-    return Filter(self.at_switch_port(switch_id,1) & self.is_ip() & Test(IP4Dst(dest_ip))) >> output_actions 
+  # def direct_route_policy(self, switch_id, new_port, dest_ip, renumber_src_ip):
+  #   output_actions = Seq([
+  #     Mod(IP4Src(renumber_src_ip)), 
+  #     Mod(Location(Physical(new_port)))
+  #   ]) 
+  #   return Filter(self.at_switch_port(switch_id,1) & self.is_ip() & Test(IP4Dst(dest_ip))) >> output_actions 
+
+  def direct_route_policy(self):
+    policies = []
+    for switch in self.switches:
+      for endhost in self.endhosts[switch]:
+        (host, host_port, host_mac, host_ip) = endhost
+        opposite_switch = "nyc" if (switch=="ithaca") else "ithaca"
+        for ap in self.coscin_config["alternate_paths"]:
+          opposite_net = ap[opposite_switch]
+          policies.append(
+            Filter(self.at_switch_port(switch,host_port) & self.is_ip() & self.to_dest_net(opposite_net) )
+            >> self.send_to_controller() 
+          )
+    return Union(policies)        
 
   def unlearned_ports_policy(self):
     is_at_unlearned_port = []
@@ -425,10 +445,10 @@ class CoscinSwitchApp(frenetic.App):
   #     (switch, port, _) = self.arp_cache[src_ip]
   #     # Get host from src_ip
   #     src_pref_net = self.preferred_net(switch)
-  #     src_host = self.host_of_ip(src_ip, self.config[switch]["network"])
+  #     src_host = self.host_of_ip(src_ip, self.coscin_config[switch]["network"])
   #     new_src = self.ip_for_network(src_pref_net, src_host)
   #     opposite_switch = "nyc" if (switch=="ithaca") else "ithaca"
-  #     dest_host = self.host_of_ip(dst_ip, self.config[opposite_switch]["network"])
+  #     dest_host = self.host_of_ip(dst_ip, self.coscin_config[opposite_switch]["network"])
   #     new_dest = self.ip_for_network(self.preferred_net(opposite_switch), dest_host)
 
   #     preferred_net_gateway = self.ip_for_network(src_pref_net, 1)
@@ -450,27 +470,26 @@ class CoscinSwitchApp(frenetic.App):
       self.capture_arp_requests_policy(),
       self.capture_new_source_dest_pairs_policy(),
       self.unlearned_ports_policy(),
+      self.direct_route_policy()
       #self.preferred_routes_policy()
       #self.preferred_route_policy("ithaca", 1, "192.168.57.100"),
       #self.preferred_route_policy("nyc", 1, "192.168.56.100"),
       #self.reverse_preferred_route_policy("nyc", 2, "192.168.157.100"),
       #self.reverse_preferred_route_policy("ithaca", 2, "192.168.156.100"),
-      #self.direct_route_policy("ithaca",2,"192.168.157.100","192.168.156.100"),
-      #self.direct_route_policy("nyc",2,"192.168.156.100","192.168.157.100")
     ])
 
   def preferred_net(self, switch):
-    return self.config["alternate_paths"][self.current_path][switch]
+    return self.coscin_config["alternate_paths"][self.current_path][switch]
 
   def send_along_preferred_path(self, switch, src_ip, dst_ip, payload ):
     # Get host from src_ip
     src_pref_net = self.preferred_net(switch)
-    src_host = self.host_of_ip(src_ip, self.config[switch]["network"])
+    src_host = self.host_of_ip(src_ip, self.coscin_config[switch]["network"])
     # Translate this to the preferred path IP
     new_src = self.ip_for_network(src_pref_net, src_host)
     # And do the same for the destination
     opposite_switch = "nyc" if (switch=="ithaca") else "ithaca"
-    dest_host = self.host_of_ip(dst_ip, self.config[opposite_switch]["network"])
+    dest_host = self.host_of_ip(dst_ip, self.coscin_config[opposite_switch]["network"])
     new_dest = self.ip_for_network(self.preferred_net(opposite_switch), dest_host)
 
     # What is the port on this switch that corresponds to the preferred path?
@@ -487,10 +506,33 @@ class CoscinSwitchApp(frenetic.App):
     dpid = self.switch_to_dpid(switch)
     self.pkt_out(dpid, payload, output_actions)
 
+  # TODO: This is almost like send_along_preferred_path except we don't touch the 
+  # destination host address
+  def send_along_direct_path(self, switch, src_ip, dst_ip, payload ):
+    opposite_switch = "nyc" if (switch=="ithaca") else "ithaca"
+    for ap in self.coscin_config["alternate_paths"]:
+      if self.ip_in_network(dst_ip, ap[opposite_switch]):
+        src_net = ap[switch] 
+
+    src_host = self.host_of_ip(src_ip, self.coscin_config[switch]["network"])
+    # Translate this to the direct path IP
+    new_src = self.ip_for_network(src_net, src_host)
+
+    # What is the port on this switch that corresponds to the direct path?
+    direct_net_gateway = self.ip_for_network(src_net, 1)
+    direct_net_port = self.arp_cache[direct_net_gateway][1] 
+
+    output_actions = [
+      Mod(IP4Src(new_src)), 
+      Output(Physical(direct_net_port))
+    ]
+    dpid = self.switch_to_dpid(switch)
+    self.pkt_out(dpid, payload, output_actions)
+
   def translate_alternate_net(self, dst_ip):
     # First find out which side (ithaca or nyc) it's on
     side = "unknown"
-    for ap in self.config["alternate_paths"]:
+    for ap in self.coscin_config["alternate_paths"]:
       if self.ip_in_network(dst_ip, ap["ithaca"]):
         side = "ithaca"
         imaginary_net = ap["ithaca"]
@@ -502,7 +544,7 @@ class CoscinSwitchApp(frenetic.App):
       return False
     else:
       host = self.host_of_ip(dst_ip, imaginary_net)
-      return self.ip_for_network(self.config[side]["network"], host)
+      return self.ip_for_network(self.coscin_config[side]["network"], host)
 
   def packet_in_normal_operation(self, dpid, port, payload):
     # The packet may be from an unlearned port.  If so, learn it.
@@ -527,18 +569,30 @@ class CoscinSwitchApp(frenetic.App):
 
     logging.info("Received "+src_ip+" -> ("+str(switch)+", "+str(port)+") -> "+dst_ip)
 
-    # Handle ARP requests
-    if p_eth.ethertype == 0x0806:
+    # Handle ARP requests.  ARP Replies also might come here to trigger port learning, but we
+    # don't do anything special with them.  
+    if p_eth.ethertype == 0x0806 and p_arp.opcode == arp.ARP_REQUEST:
       # logging.info("Comparing to "+self.gateway_ip("ithaca"))
       if dst_ip == self.gateway_ip("ithaca"):
-        real_dest_ip = self.ip_for_network(self.config["alternate_paths"][self.current_path]["ithaca"], 1)
+        real_dest_ip = self.ip_for_network(self.coscin_config["alternate_paths"][self.current_path]["ithaca"], 1)
       elif dst_ip == self.gateway_ip("nyc"):
-        real_dest_ip = self.ip_for_network(self.config["alternate_paths"][self.current_path]["nyc"], 1)
+        real_dest_ip = self.ip_for_network(self.coscin_config["alternate_paths"][self.current_path]["nyc"], 1)
       else:    # It's an imaginary host on one of the alternate paths
         real_dest_ip = self.translate_alternate_net(dst_ip) 
 
-      real_dest_mac = self.arp_cache[real_dest_ip][2]
-      self.arp_reply(switch, port, p_eth.src, src_ip, real_dest_mac, dst_ip)
+      if real_dest_ip in self.arp_cache:
+        real_dest_mac = self.arp_cache[real_dest_ip][2]
+        self.arp_reply(switch, port, p_eth.src, src_ip, real_dest_mac, dst_ip)
+      else:
+        # Send an ARP request to all ports, then just stay out of the way.  If the host is up
+        # on an unlearned port, it'll send a response, and that'll trigger learning.  Then
+        # when the NEXT ARP request for this address is received (it'll get retried a bunch of
+        # times in practice), the reply can be generated from the ARP cache.  
+        # It doesn't matter so much where the ARP reply goes, because this switch will pick it up.
+        switch_net = self.coscin_config[switch]["network"]
+        src_ip = self.ip_for_network(switch_net, 250)
+        self.send_arp_request(switch, src_ip, real_dest_ip)
+
     # elif p.dst_ip == "192.168.157.100" or p.src_ip == "192.168.159.100" or p.src_ip == "192.168.161.100":
     #   real_dest_ip = "192.168.57.100"
     #   real_dest_mac = self.arp_cache[real_dest_ip]
@@ -552,7 +606,11 @@ class CoscinSwitchApp(frenetic.App):
       #  self.update(self.normal_operation_policy())
       # If we have seen it, the rule should've taken care of the next packets, but it might
       # not be in effect yet so we handle it manually
-      self.send_along_preferred_path( switch, src_ip, dst_ip, payload )
+      opposite_switch = "nyc" if (switch=="ithaca") else "ithaca"
+      if self.ip_in_network(dst_ip, self.coscin_config[opposite_switch]["network"]):
+        self.send_along_preferred_path( switch, src_ip, dst_ip, payload )
+      else:   
+        self.send_along_direct_path( switch, src_ip, dst_ip, payload )
 
 if __name__ == '__main__':
   logging.basicConfig(stream = sys.stderr, format='%(asctime)s [%(levelname)s] %(message)s', level=logging.INFO)
