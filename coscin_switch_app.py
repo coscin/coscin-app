@@ -34,7 +34,7 @@ class CoscinSwitchApp(frenetic.App):
   router_ports = { "ithaca": set(), "nyc": set() }
 
   # index of alternate_path being used now
-  current_path = 0
+  current_path = 1
 
   # hosts = { mac1: (sw1, port1), mac2: (sw2, port2), ... }
   hosts = {}
@@ -498,7 +498,9 @@ class CoscinSwitchApp(frenetic.App):
       # If it's not in the ARP cache, it already has an ARP request on the way so ignore it for now.
       if new_dest_ip in self.arp_cache:
         direct_net_port = self.arp_cache[new_dest_ip][1]
+        new_src_ip = self.translate_alternate_net(src_ip)
         output_actions = Seq([
+          Mod(IP4Src(new_src_ip)),
           Mod(IP4Dst(new_dest_ip)),
           Mod(Location(Physical(direct_net_port)))
         ])
@@ -570,6 +572,22 @@ class CoscinSwitchApp(frenetic.App):
     dpid = self.switch_to_dpid(switch)
     self.pkt_out(dpid, payload, output_actions)
 
+  def translate_alternate_net(self, dst_ip):
+    # First find out which side (ithaca or nyc) it's on
+    side = "unknown"
+    for ap in self.coscin_config["alternate_paths"]:
+      if self.ip_in_network(dst_ip, ap["ithaca"]):
+        side = "ithaca"
+        imaginary_net = ap["ithaca"]
+      elif self.ip_in_network(dst_ip, ap["nyc"]):
+        side = "nyc"
+        imaginary_net = ap["nyc"]
+    if side == "unknown":
+      logging.error("Ooops.  Got an ARP request for a net we don't know about.  Oh well.")
+      return False
+    else:
+      host = self.host_of_ip(dst_ip, imaginary_net)
+      return self.ip_for_network(self.coscin_config[side]["network"], host)
 
   def send_to_host(self, switch, src_ip, dst_ip, payload ):
     # Convert dst_ip to its real form.  First find out what the egress switch actually is:
@@ -588,29 +606,16 @@ class CoscinSwitchApp(frenetic.App):
       self.send_arp_request(switch, src_ip, new_dest_ip)
     else:
       direct_net_port = self.arp_cache[new_dest_ip][1]
+      # We also need to translate the alternately-numbered net to a real one.  Otherwise the 
+      # host (which only knows real networks) may not know what to do with it.
+      new_src_ip = self.translate_alternate_net(src_ip)
       output_actions = [
+        Mod(IP4Src(new_src_ip)),
         Mod(IP4Dst(new_dest_ip)),
         Output(Physical(direct_net_port))
       ]
       dpid = self.switch_to_dpid(switch)
       self.pkt_out(dpid, payload, output_actions)
-
-  def translate_alternate_net(self, dst_ip):
-    # First find out which side (ithaca or nyc) it's on
-    side = "unknown"
-    for ap in self.coscin_config["alternate_paths"]:
-      if self.ip_in_network(dst_ip, ap["ithaca"]):
-        side = "ithaca"
-        imaginary_net = ap["ithaca"]
-      elif self.ip_in_network(dst_ip, ap["nyc"]):
-        side = "nyc"
-        imaginary_net = ap["nyc"]
-    if side == "unknown":
-      logging.error("Ooops.  Got an ARP request for a net we don't know about.  Oh well.")
-      return False
-    else:
-      host = self.host_of_ip(dst_ip, imaginary_net)
-      return self.ip_for_network(self.coscin_config[side]["network"], host)
 
   def packet_in_normal_operation(self, dpid, port, payload):
     # The packet may be from an unlearned port.  If so, learn it.
