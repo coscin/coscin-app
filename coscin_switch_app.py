@@ -8,6 +8,8 @@ import sys, array, logging, time, binascii, datetime, json, copy
 sys.path.append('../frenetic/lang/python')
 import frenetic
 from frenetic.syntax import *
+# Temporary until we merge streamlined sytnax into master
+from streamlined_syntax import *
 from ryu.lib.packet import packet, ethernet, vlan, arp, ipv4
 from ryu.ofproto import ether
 from tornado.ioloop import IOLoop
@@ -187,39 +189,39 @@ class CoscinSwitchApp(frenetic.App):
     return self.ip_for_network(self.coscin_config[switch]["network"], 1)
 
   def send_to_controller(self):
-    return Mod(Location(Pipe("coscin_switch_app")))
+    return SendToController("coscin_switch_app")
 
   def is_arp(self):
-    return Test(EthType(0x806))
+    return EthTypeEq(0x806)
 
   def is_ip(self):
-    return Test(EthType(0x800))
+    return EthTypeEq(0x800)
 
   def at_ithaca(self):
-    return Test(Switch(self.switch_to_dpid("ithaca")))
+    return SwitchEq(self.switch_to_dpid("ithaca"))
 
   def at_nyc(self):
-    return Test(Switch(self.switch_to_dpid("nyc")))
+    return SwitchEq(self.switch_to_dpid("nyc"))
 
   def at_switch(self, switch):
-    return Test(Switch(self.switch_to_dpid(switch)))
+    return SwitchEq(self.switch_to_dpid(switch))
 
   def at_switch_port(self, switch, port):
     #logging.info("at_switch_port("+switch+","+str(port)+")")
-    return Test(Switch(self.switch_to_dpid(switch))) & Test(Location(Physical(port)))
+    return SwitchEq(self.switch_to_dpid(switch)) & PortEq(port)
 
   def is_dest(self, ip_net, ip_host):
-    return Test(IP4Dst(self.ip_for_network(ip_net, ip_host)))
+    return IP4DstEq(self.ip_for_network(ip_net, ip_host))
 
   def dest_real_net(self, switch, ip_host):
     return self.is_dest(self.coscin_config[switch]["network"], ip_host)
 
   def to_dest_net(self, net_and_mask):
     (net, mask) = self.net_mask(net_and_mask)
-    return Test(IP4Dst(net,mask))
+    return IP4DstEq(net,mask)
 
   def is_ip_from_to(self, src_ip, dest_ip):
-    return self.is_ip() & Test(IP4Src(src_ip)) & Test(IP4Dst(dest_ip))
+    return self.is_ip() & IP4SrcEq(src_ip) & IP4DstEq(dest_ip)
 
   def destination_not_known_host_on_net(self, host_ip, dest_net):
     # Given an IP, find all src_dest pairs we've seen for this src, filter the dests down to 
@@ -228,7 +230,7 @@ class CoscinSwitchApp(frenetic.App):
     for src_dest_pair in self.ingress_src_dest_pairs:
       (src_ip, dst_ip) = src_dest_pair 
       if src_ip == host_ip and self.ip_in_network(dst_ip, dest_net):
-        preds.append(Test(IP4Dst(dst_ip)))
+        preds.append(IP4DstEq(dst_ip))
     if not preds:
       return true
     else:
@@ -241,7 +243,7 @@ class CoscinSwitchApp(frenetic.App):
     for src_dest_pair in self.egress_src_dest_pairs:
       (src_ip, dst_ip) = src_dest_pair 
       if self.ip_in_network(dst_ip, dest_net):
-        preds.append(Test(IP4Src(src_ip)) & Test(IP4Dst(dst_ip)))
+        preds.append(IP4SrcEq(src_ip) & IP4DstEq(dst_ip))
     if not preds:
       return true
     else:
@@ -370,7 +372,7 @@ class CoscinSwitchApp(frenetic.App):
       # the 192.168.156.* imaginary network.  This will be translated to the real net 192.168.56.100
       for ap in self.coscin_config["alternate_paths"]:
         (net, mask) = self.net_mask(ap[switch])
-        policies.append(Filter(self.at_switch(switch) & self.is_arp() & Test(IP4Dst(net,mask))) >> self.send_to_controller())
+        policies.append(Filter(self.at_switch(switch) & self.is_arp() & IP4DstEq(net,mask)) >> self.send_to_controller())
 
     return Union(policies)
 
@@ -390,8 +392,8 @@ class CoscinSwitchApp(frenetic.App):
         policies.append(Filter( 
           self.at_switch_port(switch,host_port) & 
           self.is_ip() & 
-          Test(IP4Src(host_ip)) & 
-          Test(IP4Dst(dest_net,dest_mask)) & 
+          IP4SrcEq(host_ip) & 
+          IP4DstEq(dest_net,dest_mask) & 
           self.destination_not_known_host_on_net(host_ip, dest_cdr)
         ) >> self.send_to_controller())
         for ap in self.coscin_config["alternate_paths"]:
@@ -400,8 +402,8 @@ class CoscinSwitchApp(frenetic.App):
           policies.append(Filter( 
             self.at_switch_port(switch,host_port) & 
             self.is_ip() & 
-            Test(IP4Src(host_ip)) & 
-            Test(IP4Dst(dest_net,dest_mask)) &
+            IP4SrcEq(host_ip) & 
+            IP4DstEq(dest_net,dest_mask) &
             self.destination_not_known_host_on_net(host_ip, dest_cdr)
           ) >> self.send_to_controller())
 
@@ -414,7 +416,7 @@ class CoscinSwitchApp(frenetic.App):
         (dest_net, dest_mask) = self.net_mask(dest_cdr)
         policies.append(Filter( 
           self.is_ip() & 
-          Test(IP4Dst(dest_net,dest_mask)) &
+          IP4DstEq(dest_net,dest_mask) &
           self.src_dest_pair_not_learned(dest_cdr)
         ) >> self.send_to_controller())
 
@@ -448,11 +450,7 @@ class CoscinSwitchApp(frenetic.App):
         preferred_net_gateway = self.ip_for_network(src_pref_net, 1)
         preferred_net_port = self.arp_cache[preferred_net_gateway][1] 
 
-        output_actions = Seq([
-          Mod(IP4Src(new_src)), 
-          Mod(IP4Dst(new_dest)),
-          Mod(Location(Physical(preferred_net_port)))
-        ])
+        output_actions = SetIP4Src(new_src) >> SetIP4Dst(new_dest) >> Send(preferred_net_port)
         policies.append(
           Filter( self.at_switch_port(switch, port) & self.is_ip_from_to(src_ip, dst_ip) ) 
           >> output_actions
@@ -465,12 +463,9 @@ class CoscinSwitchApp(frenetic.App):
             alternate_path = ap
         new_src = self.ip_for_network(alternate_path[switch], src_host)
         direct_net_gateway = self.ip_for_network(alternate_path[switch], 1)
-        direct_net_port = self.arp_cache[direct_net_gateway][1] 
-        output_actions = Seq([
-          Mod(IP4Src(new_src)),
-          Mod(EthDst(self.arp_cache[direct_net_gateway][2])),
-          Mod(Location(Physical(direct_net_port)))
-        ])
+        direct_net_port = self.arp_cache[direct_net_gateway][1]
+        direct_mac = self.arp_cache[direct_net_gateway][2] 
+        output_actions = SetIP4Src(new_src) >> SetEthDst(direct_mac) >> Send(direct_net_port)
         policies.append(
           Filter( self.at_switch_port(switch, port) & self.is_ip_from_to(src_ip, dst_ip) ) 
           >> output_actions
@@ -499,13 +494,9 @@ class CoscinSwitchApp(frenetic.App):
       if new_dest_ip in self.arp_cache:
         direct_net_port = self.arp_cache[new_dest_ip][1]
         new_src_ip = self.translate_alternate_net(src_ip)
-        output_actions = Seq([
-          Mod(IP4Src(new_src_ip)),
-          Mod(IP4Dst(new_dest_ip)),
-          Mod(Location(Physical(direct_net_port)))
-        ])
+        output_actions = SetIP4Src(new_src_ip) >> SetIP4Dst(new_dest_ip) >> Send(direct_net_port)
         policies.append(
-          Filter( Test(Switch(self.switch_to_dpid(switch))) & self.is_ip_from_to(src_ip, dst_ip) ) 
+          Filter( SwitchEq(self.switch_to_dpid(switch)) & self.is_ip_from_to(src_ip, dst_ip) ) 
           >> output_actions
         )
     return Union(policies)
@@ -541,8 +532,8 @@ class CoscinSwitchApp(frenetic.App):
     #logging.info("Thrrough port "+str(preferred_net_port))
 
     output_actions = [
-      Mod(IP4Src(new_src)), 
-      Mod(IP4Dst(new_dest)),
+      SetIP4Src(new_src), 
+      SetIP4Dst(new_dest),
       Output(Physical(preferred_net_port))
     ]
     dpid = self.switch_to_dpid(switch)
@@ -565,8 +556,8 @@ class CoscinSwitchApp(frenetic.App):
     direct_net_port = self.arp_cache[direct_net_gateway][1] 
 
     output_actions = [
-      Mod(IP4Src(new_src)), 
-      Mod(EthDst(self.arp_cache[direct_net_gateway][2])),
+      SetIP4Src(new_src), 
+      SetEthDst(self.arp_cache[direct_net_gateway][2]),
       Output(Physical(direct_net_port))
     ]
     dpid = self.switch_to_dpid(switch)
@@ -610,8 +601,8 @@ class CoscinSwitchApp(frenetic.App):
       # host (which only knows real networks) may not know what to do with it.
       new_src_ip = self.translate_alternate_net(src_ip)
       output_actions = [
-        Mod(IP4Src(new_src_ip)),
-        Mod(IP4Dst(new_dest_ip)),
+        SetIP4Src(new_src_ip),
+        SetIP4Dst(new_dest_ip),
         Output(Physical(direct_net_port))
       ]
       dpid = self.switch_to_dpid(switch)
