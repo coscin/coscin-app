@@ -13,6 +13,10 @@ from streamlined_syntax import *
 from ryu.lib.packet import packet, ethernet, vlan, arp, ipv4
 from ryu.ofproto import ether
 from tornado.ioloop import IOLoop
+from tornado.ioloop import PeriodicCallback
+
+# Interval in milliseconds
+PREFERRED_PATH_ADJUSTMENT_INTERVAL = 5000
 
 def get(pkt,protocol):
   for p in pkt:
@@ -36,7 +40,7 @@ class CoscinSwitchApp(frenetic.App):
   router_ports = { "ithaca": set(), "nyc": set() }
 
   # index of alternate_path being used now
-  current_path = 1
+  preferred_path = 0
 
   # hosts = { mac1: (sw1, port1), mac2: (sw2, port2), ... }
   hosts = {}
@@ -275,7 +279,7 @@ class CoscinSwitchApp(frenetic.App):
     # If Frenetic went down, it'll call connected() when it comes back up.  In that case, just 
     # resend the current policies
     if self.state == self.STATE_NORMAL_OPERATION:
-      self.update(self.policy())
+      self.update(self.normal_operation_policy())
     else:
       # Turn on remove_tail_drops to get around issue 463
       #self.config( CompilerOptions("empty", "IP4Dst < EthType < Location < IP4Src < Switch", True, False, True) )
@@ -512,7 +516,7 @@ class CoscinSwitchApp(frenetic.App):
     ])
 
   def preferred_net(self, switch):
-    return self.coscin_config["alternate_paths"][self.current_path][switch]
+    return self.coscin_config["alternate_paths"][self.preferred_path][switch]
 
   def send_along_preferred_path(self, switch, src_ip, dst_ip, payload ):
     # Get host from src_ip
@@ -529,7 +533,7 @@ class CoscinSwitchApp(frenetic.App):
     preferred_net_gateway = self.ip_for_network(src_pref_net, 1)
     #logging.info("Preferred net gateway is "+preferred_net_gateway)
     preferred_net_port = self.arp_cache[preferred_net_gateway][1] 
-    #logging.info("Thrrough port "+str(preferred_net_port))
+    #logging.info("Through port "+str(preferred_net_port))
 
     output_actions = [
       SetIP4Src(new_src), 
@@ -636,9 +640,9 @@ class CoscinSwitchApp(frenetic.App):
     if p_eth.ethertype == 0x0806 and p_arp.opcode == arp.ARP_REQUEST:
       # logging.info("Comparing to "+self.gateway_ip("ithaca"))
       if dst_ip == self.gateway_ip("ithaca"):
-        real_dest_ip = self.ip_for_network(self.coscin_config["alternate_paths"][self.current_path]["ithaca"], 1)
+        real_dest_ip = self.ip_for_network(self.coscin_config["alternate_paths"][self.preferred_path]["ithaca"], 1)
       elif dst_ip == self.gateway_ip("nyc"):
-        real_dest_ip = self.ip_for_network(self.coscin_config["alternate_paths"][self.current_path]["nyc"], 1)
+        real_dest_ip = self.ip_for_network(self.coscin_config["alternate_paths"][self.preferred_path]["nyc"], 1)
       else:    # It's an imaginary host on one of the alternate paths
         real_dest_ip = self.translate_alternate_net(dst_ip) 
 
@@ -676,9 +680,24 @@ class CoscinSwitchApp(frenetic.App):
       elif self.packet_at_egress_switch(switch, port, src_ip, dst_ip):
         self.send_to_host( switch, src_ip, dst_ip, payload )
 
+  def set_preferred_path(self, new_preferred_path):
+    # Send pings 
+    logging.info("Adjusting preferred path from "+str(self.preferred_path)+" to "+str(new_preferred_path))
+    # Setting a preferred path is pretty hard on the switch - it sends a whole new flow table
+    # so don't do it unless absolutely necessary
+    if self.preferred_path == new_preferred_path:
+      logging.info("No change.")
+    else:
+      self.preferred_path = new_preferred_path
+      self.update(self.normal_operation_policy())
+
+def adjust_preferred_path():
+  app.set_preferred_path(1)
+
 if __name__ == '__main__':
   logging.basicConfig(stream = sys.stderr, format='%(asctime)s [%(levelname)s] %(message)s', level=logging.INFO)
 
   logging.info("*** CoSciN Switch Application Begin")
   app = CoscinSwitchApp()
+  #PeriodicCallback(adjust_preferred_path, PREFERRED_PATH_ADJUSTMENT_INTERVAL).start()
   app.start_event_loop()
