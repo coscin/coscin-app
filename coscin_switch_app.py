@@ -422,8 +422,6 @@ class CoscinSwitchApp(frenetic.App):
 
       # Now handle incoming packets for all our home networks.  We need to learn
       # those (src, dest) pairs as well
-      # TODO: Do we need to process packets in intra-net paths too?  This will be
-      # those with a destination on the real network
       for ap in self.coscin_config["alternate_paths"]:
         dest_cdr = ap[switch]
         (dest_net, dest_mask) = self.net_mask(dest_cdr)
@@ -514,6 +512,25 @@ class CoscinSwitchApp(frenetic.App):
         )
     return Union(policies)
 
+  # Output rules for each pair of learned endhosts so intranet traffic can be handled nicely on 
+  # the switch.
+  # TODO: If the app is restarted but hosts are hanging onto ARP cache entries, they won't be able
+  # to get packets to each other.  I'm letting this go for now because (1) intranet host
+  # traffic is relatively rare (2) ARP cache entries usually timeout in 10 minutes anyway.  
+  def intranet_policy(self):
+    policies = []
+    for switch in self.switches:
+      for src_endhost in self.endhosts[switch]:
+        (_, src_port, _, src_ip) = src_endhost
+        for dst_endhost in self.endhosts[switch]:
+          (_, dst_port, _, dst_ip) = dst_endhost
+          # No rule for a host to itself, obviously
+          if src_ip != dst_ip:
+            policies.append(
+              Filter(self.is_ip_from_to(src_ip, dst_ip) & self.at_switch_port(switch, src_port) )
+              >> Send(dst_port)
+            )
+    return Union(policies)
 
   def normal_operation_policy(self):
     return Union([
@@ -521,7 +538,8 @@ class CoscinSwitchApp(frenetic.App):
       self.capture_new_source_dest_pairs_policy(),
       self.unlearned_ports_policy(),
       self.ingress_src_dest_pairs_policy(),
-      self.egress_src_dest_pairs_policy()
+      self.egress_src_dest_pairs_policy(),
+      self.intranet_policy()
     ])
 
   def preferred_net(self, switch):
@@ -644,18 +662,25 @@ class CoscinSwitchApp(frenetic.App):
 
     logging.info("Received "+src_ip+" -> ("+str(switch)+", "+str(port)+") -> "+dst_ip)
 
-    # Handle ARP requests.  ARP Replies also might come here to trigger port learning, but we
-    # don't do anything special with them.  
+    # Handle ARP requests.    
     if p_eth.ethertype == 0x0806 and p_arp.opcode == arp.ARP_REQUEST:
       # logging.info("Comparing to "+self.gateway_ip("ithaca"))
       if dst_ip == self.gateway_ip("ithaca"):
         real_dest_ip = self.ip_for_network(self.coscin_config["alternate_paths"][self.preferred_path]["ithaca"], 1)
       elif dst_ip == self.gateway_ip("nyc"):
         real_dest_ip = self.ip_for_network(self.coscin_config["alternate_paths"][self.preferred_path]["nyc"], 1)
+      # If the request is for a host in the net we're already in, just broadcast it.  The host
+      # itself will answer.
+      elif self.ip_in_network(src_ip, self.coscin_config[switch]["network"]) and \
+           self.ip_in_network(dst_ip, self.coscin_config[switch]["network"]):
+         real_dest_ip = None
       else:    # It's an imaginary host on one of the alternate paths
         real_dest_ip = self.translate_alternate_net(dst_ip) 
 
-      if real_dest_ip in self.arp_cache:
+      if real_dest_ip == None:
+        # TODO: Don't send packet out ingress port,  Do it sloppy for now.
+        self.flood_indiscriminately(switch, payload)
+      elif real_dest_ip in self.arp_cache:
         real_dest_mac = self.arp_cache[real_dest_ip][2]
         self.arp_reply(switch, port, p_eth.src, src_ip, real_dest_mac, dst_ip)
       else:
@@ -665,8 +690,22 @@ class CoscinSwitchApp(frenetic.App):
         # times in practice), the reply can be generated from the ARP cache.  
         # It doesn't matter so much where the ARP reply goes, because this switch will pick it up.
         switch_net = self.coscin_config[switch]["network"]
+        # TODO: 250 will work as a host on subnets with a /24, but not any higher.  
         src_ip = self.ip_for_network(switch_net, 250)
         self.send_arp_request(switch, src_ip, real_dest_ip)
+
+    # We don't do anything special to ARP replies, just forward them onto their destination
+    # unidirectionally
+    elif p_eth.ethertype == 0x0806 and p_arp.opcode == arp.ARP_REPLY:
+      # The destination port was definitely learned because that's where the request originated
+      if p_eth.dst not in self.hosts:
+        logging.error("Ooops!  ARP reply bound for a destination we don't know")
+      elif self.hosts[p_eth.dst][0] != switch:
+        logging.error("Ooops!  ARP reply is destined for a different network.  Can't happen.")
+      else:
+        direct_net_port = self.hosts[p_eth.dst][1]
+        output_actions = [Output(Physical(direct_net_port))]
+        self.pkt_out(dpid, payload, output_actions)
 
     elif p_eth.ethertype == 0x0800:
       # If we haven't seen this source, dest pair yet, add it, and the rule with it.
@@ -707,7 +746,7 @@ if __name__ == '__main__':
   logging.basicConfig(stream = sys.stderr, format='%(asctime)s [%(levelname)s] %(message)s', level=logging.INFO)
 
   logging.info("*** CoSciN Switch Application Begin")
-  if len(sys.argv) > 0:
+  if len(sys.argv) > 1:
     app = CoscinSwitchApp(sys.argv[1])
   else:
     app = CoscinSwitchApp()
