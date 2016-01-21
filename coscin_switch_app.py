@@ -189,6 +189,10 @@ class CoscinSwitchApp(frenetic.App):
       self.arp_cache[virtual_ip] = (switch, port, mac)
     self.unlearned_ports[switch].remove(port)
 
+  def unlearn_mac_on_port(self, switch, port):
+    # TODO: Remove port from relevant tables.  Will require resending the policies.   
+    pass
+
   def gateway_ip(self, switch):
     return self.ip_for_network(self.coscin_config[switch]["network"], 1)
 
@@ -295,13 +299,17 @@ class CoscinSwitchApp(frenetic.App):
 
   def port_up(self, dpid, port):
     switch = self.dpid_to_switch(dpid)
+    logging.info("Port up: "+switch+"/"+str(port))
     # If port comes up, remove any learned macs on it (probably won't be any) 
     self.unlearn_mac_on_port(switch, port)
+    # TODO: Resend policies, maybe
 
   def port_down(self, dpid, port):
     switch = self.dpid_to_switch(dpid)
+    logging.info("Port down: "+switch+"/"+str(port))
     # If port goes down, remove any learned macs on it
     self.unlearn_mac_on_port(switch, port)
+    # TODO: Resend policies, maybe
 
   def switch_up(self, dpid,ports):
     switch = self.dpid_to_switch(dpid)
@@ -313,9 +321,10 @@ class CoscinSwitchApp(frenetic.App):
     logging.info("Updated Switches: "+str(self.switches))
 
   # Don't remove switch info when it supposedly goes down - this happens all the time on Dell switches and it comes 
-  # right back up.  
+  # right back up.  Am not sure whether it's different on HP switches. 
   def switch_down(self, dpid):
-    pass
+    switch = self.dpid_to_switch(dpid)
+    logging.info("Switch down: "+switch)
 
   ########################
   # Router Learning Mode
@@ -347,10 +356,10 @@ class CoscinSwitchApp(frenetic.App):
     # Send out ARP packets for all router interfaces to learn their mac addresses.  The
     # packet_in_router will handle the replies as they arrive
     for path in self.coscin_config["alternate_paths"]:
-      if "ithaca" in self.coscin_config:
+      if "ithaca" in self.switches:
         ithaca_router_net = path["ithaca"]
         self.send_arp_request_router_interface("ithaca", ithaca_router_net)
-      if "nyc" in self.coscin_config:
+      if "nyc" in self.switches:
         nyc_router_net = path["nyc"] 
         self.send_arp_request_router_interface("nyc", nyc_router_net)
 
@@ -698,6 +707,9 @@ if __name__ == '__main__':
   logging.basicConfig(stream = sys.stderr, format='%(asctime)s [%(levelname)s] %(message)s', level=logging.INFO)
 
   logging.info("*** CoSciN Switch Application Begin")
-  app = CoscinSwitchApp()
+  if len(sys.argv) > 0:
+    app = CoscinSwitchApp(sys.argv[1])
+  else:
+    app = CoscinSwitchApp()
   #PeriodicCallback(adjust_preferred_path, PREFERRED_PATH_ADJUSTMENT_INTERVAL).start()
   app.start_event_loop()
