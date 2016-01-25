@@ -218,11 +218,8 @@ class CoscinSwitchApp(frenetic.App):
     #logging.info("at_switch_port("+switch+","+str(port)+")")
     return SwitchEq(self.switch_to_dpid(switch)) & PortEq(port)
 
-  def is_dest(self, ip_net, ip_host):
-    return IP4DstEq(self.ip_for_network(ip_net, ip_host))
-
-  def dest_real_net(self, switch, ip_host):
-    return self.is_dest(self.coscin_config[switch]["network"], ip_host)
+  def dest_real_net(self, switch):
+    return self.to_dest_net(self.coscin_config[switch]["network"])
 
   def to_dest_net(self, net_and_mask):
     (net, mask) = self.net_mask(net_and_mask)
@@ -263,6 +260,16 @@ class CoscinSwitchApp(frenetic.App):
 
   def packet_at_ingress_switch(self, switch, port, src_ip, dst_ip):
     return not self.packet_at_egress_switch(switch, port, src_ip, dst_ip)
+
+  def ip_in_coscin_network(self, dst_ip):
+    if self.ip_in_network(dst_ip, self.coscin_config["ithaca"]["network"]):
+      return True
+    if self.ip_in_network(dst_ip, self.coscin_config["nyc"]["network"]):
+      return True    
+    for ap in self.coscin_config["alternate_paths"]:
+      if self.ip_in_network(dst_ip, ap["ithaca"]) or self.ip_in_network(dst_ip, ap["nyc"]):
+        return True
+    return False      
 
   ########################
   # Frenetic Dispatchers
@@ -337,7 +344,7 @@ class CoscinSwitchApp(frenetic.App):
     p = get(pkt, 'arp')
     p_eth = get(pkt, 'ethernet')
     switch = self.dpid_to_switch(dpid)
-    logging.info("Received "+p_eth.src+"/"+p.src_ip+" -> ("+switch+", "+str(port)+") -> "+p.dst_ip)
+    logging.info("Received ("+str(p_eth.ethertype)+"): "+p_eth.src+"/"+p.src_ip+" -> ("+switch+", "+str(port)+") -> "+p.dst_ip)
     self.unlearned_ports[switch].remove(port)
     self.router_ports[switch].add(port)
     # Supposedly, the src mac in the ARP reply and the ethernet frame itself should be the
@@ -377,8 +384,8 @@ class CoscinSwitchApp(frenetic.App):
     for switch in self.switches:
       # In normal mode, we capture ARP requests for IP's that don't really exist.  You can
       # think of them as symbolic links to the real IP.  We capture .1 address of
-      # each of the endpoint networks
-      policies.append(Filter(self.at_switch(switch) & self.is_arp() & self.dest_real_net(switch, 1)) >> self.send_to_controller())
+      # each of the endpoint networks, plus any real hosts on the net
+      policies.append(Filter(self.at_switch(switch) & self.is_arp() & self.dest_real_net(switch)) >> self.send_to_controller())
 
       # And we capture ARP requests for the alternate paths.  These will always be for 
       # hosts that have no real estate on the imaginary link, as in 192.168.156.100 along 
@@ -653,6 +660,13 @@ class CoscinSwitchApp(frenetic.App):
       p_ip = get(pkt, 'ipv4')
       src_ip = p_ip.src
       dst_ip = p_ip.dst
+    else:
+      src_ip = '0.0.0.0'
+      logging.info("Received packet of type "+str(p_eth.ethertype))
+
+    # TODO: Handle DHCP requests someday, ... maybe
+    if src_ip == '0.0.0.0':
+      return
 
     if port in self.unlearned_ports[switch]:
       self.learn(switch, port, p_eth.src, src_ip)
@@ -679,6 +693,7 @@ class CoscinSwitchApp(frenetic.App):
 
       if real_dest_ip == None:
         # TODO: Don't send packet out ingress port,  Do it sloppy for now.
+        logging.info("Flooding ARP Request")
         self.flood_indiscriminately(switch, payload)
       elif real_dest_ip in self.arp_cache:
         real_dest_mac = self.arp_cache[real_dest_ip][2]
@@ -711,13 +726,23 @@ class CoscinSwitchApp(frenetic.App):
       # If we haven't seen this source, dest pair yet, add it, and the rule with it.
       # Which list we put it in depends on whether we're at the ingress or egress switch
       if self.packet_at_ingress_switch(switch, port, src_ip, dst_ip):
-        if (src_ip, dst_ip) not in self.ingress_src_dest_pairs:
+        # TODO: If this packet is bound for hosts outside the CoSciN network, in production just forward them,
+        # For now, just drop them.  
+        if not self.ip_in_coscin_network(dst_ip):
+           logging.info("Internet-bound packet dropped in this test network")
+           return
+        # It's possible that this is an intra-network packet even though the rule should 've been installed
+        # to handle such packets directly.  send_along_direct_path will handle it below.
+        elif self.ip_in_network(dst_ip, self.coscin_config[switch]["network"]):
+          pass 
+        elif (src_ip, dst_ip) not in self.ingress_src_dest_pairs:
           self.ingress_src_dest_pairs.add( (src_ip, dst_ip) )
           self.update(self.normal_operation_policy())
-      else:
+      elif self.packet_at_egress_switch(switch, port, src_ip, dst_ip):
         if (src_ip, dst_ip) not in self.egress_src_dest_pairs:
           self.egress_src_dest_pairs.add( (src_ip, dst_ip) )
           self.update(self.normal_operation_policy())
+
       # If we have seen it, the rule should've taken care of the next packets, but it might
       # not be in effect yet so we handle it manually
       opposite_switch = "nyc" if (switch=="ithaca") else "ithaca"
