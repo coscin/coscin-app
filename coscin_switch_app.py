@@ -190,8 +190,26 @@ class CoscinSwitchApp(frenetic.App):
     self.unlearned_ports[switch].remove(port)
 
   def unlearn_mac_on_port(self, switch, port):
-    # TODO: Remove port from relevant tables.  Will require resending the policies.   
-    pass
+    # TODO: If a router port went down, we need to retrigger MAC learning somehow.  Ignore for now.
+    if port in self.router_ports[switch]:
+      return False
+    # If the port hasn't been learned, there's no saved state, so do nothing.
+    if port in self.unlearned_ports[switch]:
+      return False
+    for mac in self.hosts:
+      (sw, p) = self.hosts[mac]
+      if sw==switch and p==port:
+        del self.hosts[mac]
+    for i, endhost in enmerate(self.endhosts[switch]):
+      (_, p, _, _) = endhost
+      if p==port:
+        del self.endhosts[switch][i]
+    for src_ip in self.arp_cache:
+      (sw, p, _) = self.arp_cache[src_ip]
+      if sw==switch and p==port:
+        del self.arp_cache[src_ip]
+    self.unlearned_ports[switch].add(port)
+    return True   # Triggers rules to be resent to switch
 
   def gateway_ip(self, switch):
     return self.ip_for_network(self.coscin_config[switch]["network"], 1)
@@ -204,12 +222,6 @@ class CoscinSwitchApp(frenetic.App):
 
   def is_ip(self):
     return EthTypeEq(0x800)
-
-  def at_ithaca(self):
-    return SwitchEq(self.switch_to_dpid("ithaca"))
-
-  def at_nyc(self):
-    return SwitchEq(self.switch_to_dpid("nyc"))
 
   def at_switch(self, switch):
     return SwitchEq(self.switch_to_dpid(switch))
@@ -307,16 +319,17 @@ class CoscinSwitchApp(frenetic.App):
   def port_up(self, dpid, port):
     switch = self.dpid_to_switch(dpid)
     logging.info("Port up: "+switch+"/"+str(port))
-    # If port comes up, remove any learned macs on it (probably won't be any) 
-    self.unlearn_mac_on_port(switch, port)
-    # TODO: Resend policies, maybe
+    # If port comes up, remove any learned macs on it (probably won't be any).  This is necessary
+    # in case port_down was not fired.   
+    if self.unlearn_mac_on_port(switch, port):
+      self.update(self.normal_operation_policy())
 
   def port_down(self, dpid, port):
     switch = self.dpid_to_switch(dpid)
     logging.info("Port down: "+switch+"/"+str(port))
     # If port goes down, remove any learned macs on it
-    self.unlearn_mac_on_port(switch, port)
-    # TODO: Resend policies, maybe
+    if self.unlearn_mac_on_port(switch, port):
+      self.update(self.normal_operation_policy())
 
   def switch_up(self, dpid,ports):
     switch = self.dpid_to_switch(dpid)
