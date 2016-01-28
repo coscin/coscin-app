@@ -45,6 +45,9 @@ class NetworkInformationBase():
   # This will be seeded with network data in .json file
   coscin_config = {} 
 
+  # Dirty flag set if policies need to be regenerated and sent to switches
+  dirty = False
+
   def dpid_to_switch(self, dpid):
     for sw in ["ithaca", "nyc"]:
       if dpid == self.coscin_config[sw]["dpid"]:
@@ -210,4 +213,46 @@ class NetworkInformationBase():
     return self.coscin_config["alternate_paths"]
 
   def get_unlearned_ports(self):
-    return self.unlearned_ports 
+    return self.unlearned_ports
+
+  def preferred_net(self, switch):
+    return self.alternate_paths()[self.get_preferred_path()][switch]
+
+  def translate_alternate_net(self, dst_ip):
+    # First find out which side (ithaca or nyc) it's on
+    found_side = None
+    for ap in self.alternate_paths():
+      for side in ["ithaca", "nyc"]:
+        if NetUtils.ip_in_network(dst_ip, ap[side]):
+          found_side = side
+          imaginary_net = ap[side]
+
+    if side == None:
+      logging.error("Ooops.  Got an ARP request for a net we don't know about.  Oh well.")
+      return False
+    else:
+      host = NetUtils.host_of_ip(dst_ip, imaginary_net)
+      return NetUtils.ip_for_network(self.actual_net_for(found_side), host)
+
+  def is_dirty(self):
+    return self.dirty
+
+  def set_dirty(self):
+    self.dirty = True
+
+  def clear_dirty(self):
+    self.dirty = False
+
+  def opposite_switch(self, switch):
+    return "nyc" if (switch=="ithaca") else "ithaca"
+
+  def ip_in_coscin_network(self, dst_ip):
+    if NetUtils.ip_in_network(dst_ip, self.actual_net_for("ithaca")):
+      return True
+    if NetUtils.ip_in_network(dst_ip, self.actual_net_for("nyc")):
+      return True    
+    for ap in self.alternate_paths():
+      if NetUtils.ip_in_network(dst_ip, ap["ithaca"]) or NetUtils.ip_in_network(dst_ip, ap["nyc"]):
+        return True
+    return False      
+

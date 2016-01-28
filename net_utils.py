@@ -1,3 +1,6 @@
+import array
+from ryu.lib.packet import packet
+
 class NetUtils():
 
   @staticmethod
@@ -58,4 +61,12 @@ class NetUtils():
     net_int = net_int & net_mask   # Most likely, there is no change here
     src_net_int = NetUtils.ipv4_to_int(src_ip) & net_mask
     return net_int == src_net_int
+
+  @staticmethod
+  def packet(payload, protocol):
+    pkt = packet.Packet(array.array('b', payload.data))
+    for p in pkt:
+      if p.protocol_name == protocol:
+        return p
+    return None
 
