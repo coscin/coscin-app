@@ -15,7 +15,7 @@ class NetworkInformationBase():
   unlearned_ports = {}
 
   # Router ports are tallied on the approriate side
-  router_ports = { "ithaca": set(), "nyc": set() }
+  router_port = { "ithaca": 0, "nyc": 0 }
 
   # index of alternate_path being used now
   preferred_path = 0
@@ -25,7 +25,7 @@ class NetworkInformationBase():
 
   # endhosts = { "ithaca": [(host_portion_of_ip, port, mac, ip), ...], "nyc": ... }
   # This is more for enumerating end user hosts on each end network
-  endhosts = { "ithaca": [], "nyc": []}
+  endhosts = { "ithaca": [], "nyc": [] }
 
   # We maintain our own little ARP table for the router IP's and endhosts.  Entries are of the form
   # ip: (switch, port, mac).  It's like hosts, but for L3.  We also have entries for
@@ -83,7 +83,7 @@ class NetworkInformationBase():
         virtual_ip = NetUtils.ip_for_network(ap[switch], host_portion)
         self.arp_cache[virtual_ip] = (switch, port, mac)
     elif port_type == self.ROUTER_PORT:
-      self.router_ports[switch].add(port)
+      self.router_port[switch] = port
     else:
       logging.error("Unknown port type: "+str(port_type))
       return False
@@ -91,7 +91,7 @@ class NetworkInformationBase():
 
   def unlearn_mac_on_port(self, switch, port):
     # TODO: If a router port went down, we need to retrigger MAC learning somehow.  Ignore for now.
-    if port in self.router_ports[switch]:
+    if port == self.router_port[switch]:
       return False
     # If the port hasn't been learned, there's no saved state, so do nothing.
     if port in self.unlearned_ports[switch]:
@@ -142,7 +142,7 @@ class NetworkInformationBase():
 
   def at_egress_switch(self, switch, port):
     # We're at a host port on the egress switch if we're on a router port
-    return port in self.router_ports[switch] 
+    return port == self.router_port[switch] 
 
   def at_ingress_switch(self, switch, port):
     return not self.at_egress_switch(switch, port)
@@ -255,4 +255,10 @@ class NetworkInformationBase():
       if NetUtils.ip_in_network(dst_ip, ap["ithaca"]) or NetUtils.ip_in_network(dst_ip, ap["nyc"]):
         return True
     return False      
+
+  def router_port_for_switch(self, switch):
+    return self.router_port[switch]
+
+  def router_ip_for_switch(self, switch):
+    return NetUtils.ip_for_network(self.actual_net_for(switch), "1")
 

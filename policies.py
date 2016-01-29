@@ -29,3 +29,6 @@ class Policies():
   def is_ip_from_to(src_ip, dest_ip):
     return Policies.is_ip() & IP4SrcEq(src_ip) & IP4DstEq(dest_ip)
 
+  @staticmethod
+  def is_arp_from_to(src_ip, dest_ip):
+    return Policies.is_arp() & IP4SrcEq(src_ip) & IP4DstEq(dest_ip)

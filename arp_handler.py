@@ -40,7 +40,6 @@ class ArpHandler():
       # In normal mode, we capture ARP requests for IP's that don't really exist.  You can
       # think of them as symbolic links to the real IP.  We capture .1 address of
       # each of the endpoint networks, plus any real hosts on the net
-      policies.append(Filter(Policies.at_switch(dpid) & Policies.is_arp() & self.dest_real_net(switch)) >> Policies.send_to_controller())
 
       # And we capture ARP requests for the alternate paths.  These will always be for 
       # hosts that have no real estate on the imaginary link, as in 192.168.156.100 along 
@@ -66,22 +65,17 @@ class ArpHandler():
     if p_arp.opcode == arp.ARP_REQUEST:
       preferred_path = self.nib.get_preferred_path()
 
-      if dst_ip == self.gateway_ip("ithaca"):
-        real_dest_ip = NetUtils.ip_for_network(self.nib.alternate_paths()[preferred_path]["ithaca"], 1)
-      elif dst_ip == self.gateway_ip("nyc"):
-        real_dest_ip = NetUtils.ip_for_network(self.nib.alternate_paths()[preferred_path]["nyc"], 1)
       # If the request is for a host in the net we're already in, just broadcast it.  The host
       # itself will answer.
-      elif NetUtils.ip_in_network(src_ip, self.nib.actual_net_for(switch)) and \
+      if NetUtils.ip_in_network(src_ip, self.nib.actual_net_for(switch)) and \
            NetUtils.ip_in_network(dst_ip, self.nib.actual_net_for(switch)):
          real_dest_ip = None
       else:    # It's an imaginary host on one of the alternate paths
         real_dest_ip = self.nib.translate_alternate_net(dst_ip) 
 
       if real_dest_ip == None:
-        # TODO: Don't send packet out ingress port,  Do it sloppy for now.
         logging.info("Flooding ARP Request")
-        self.main_app.flood_indiscriminately(switch, payload)
+        self.main_app.flood(switch, port, payload)
       elif self.nib.learned_ip(real_dest_ip):
         real_dest_mac = self.nib.mac_for_ip(real_dest_ip)
         self.arp_reply(switch, port, p_eth.src, src_ip, real_dest_mac, dst_ip)

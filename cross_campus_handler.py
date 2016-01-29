@@ -111,10 +111,8 @@ class CrossCampusHandler():
         dest_host = NetUtils.host_of_ip(dst_ip, self.nib.actual_net_for(opposite_switch))
         new_dest = NetUtils.ip_for_network(self.nib.preferred_net(opposite_switch), dest_host)
 
-        preferred_net_gateway = NetUtils.ip_for_network(src_pref_net, 1)
-        preferred_net_port = self.nib.port_for_ip(preferred_net_gateway) 
-
-        output_actions = SetIP4Src(new_src) >> SetIP4Dst(new_dest) >> Send(preferred_net_port)
+        router_port = self.nib.router_port_for_switch(switch)
+        output_actions = SetIP4Src(new_src) >> SetIP4Dst(new_dest) >> Send(router_port)
         policies.append(
           Filter( Policies.at_switch_port(dpid, port) & Policies.is_ip_from_to(src_ip, dst_ip) ) 
           >> output_actions
@@ -126,10 +124,8 @@ class CrossCampusHandler():
           if NetUtils.ip_in_network(dst_ip, ap[opposite_switch]):
             alternate_path = ap
         new_src = NetUtils.ip_for_network(alternate_path[switch], src_host)
-        direct_net_gateway = NetUtils.ip_for_network(alternate_path[switch], 1)
-        direct_net_port = self.nib.port_for_ip(direct_net_gateway)
-        direct_mac = self.nib.mac_for_ip(direct_net_gateway)
-        output_actions = SetIP4Src(new_src) >> SetEthDst(direct_mac) >> Send(direct_net_port)
+        router_port = self.nib.router_port_for_switch(switch)
+        output_actions = SetIP4Src(new_src) >> Send(router_port)
         policies.append(
           Filter( Policies.at_switch_port(dpid, port) & Policies.is_ip_from_to(src_ip, dst_ip) ) 
           >> output_actions
@@ -182,14 +178,10 @@ class CrossCampusHandler():
     dest_host = NetUtils.host_of_ip(dst_ip, self.nib.actual_net_for(opposite_switch))
     new_dest = NetUtils.ip_for_network(self.nib.preferred_net(opposite_switch), dest_host)
 
-    # What is the port on this switch that corresponds to the preferred path?
-    preferred_net_gateway = NetUtils.ip_for_network(src_pref_net, 1)
-    preferred_net_port = self.nib.port_for_ip(preferred_net_gateway)   
-
     output_actions = [
       SetIP4Src(new_src), 
       SetIP4Dst(new_dest),
-      Output(Physical(preferred_net_port))
+      Output(Physical(self.nib.router_port_for_switch(switch)))
     ]
     dpid = self.nib.switch_to_dpid(switch)
     self.main_app.pkt_out(dpid, payload, output_actions)
@@ -206,14 +198,9 @@ class CrossCampusHandler():
     # Translate this to the direct path IP
     new_src = NetUtils.ip_for_network(src_net, src_host)
 
-    # What is the port on this switch that corresponds to the direct path?
-    direct_net_gateway = NetUtils.ip_for_network(src_net, 1)
-    direct_net_port = self.nib.port_for_ip(direct_net_gateway) 
-
     output_actions = [
       SetIP4Src(new_src), 
-      SetEthDst(self.nib.mac_for_ip(direct_net_gateway)),
-      Output(Physical(direct_net_port))
+      Output(Physical(self.nib.router_port_for_switch(switch)))
     ]
     dpid = self.nib.switch_to_dpid(switch)
     self.main_app.pkt_out(dpid, payload, output_actions)

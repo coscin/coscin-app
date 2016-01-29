@@ -18,6 +18,7 @@ from net_utils import NetUtils
 from policies import Policies
 from network_information_base import NetworkInformationBase
 from arp_handler import ArpHandler
+from broadcast_handler import BroadcastHandler
 from intranet_handler import IntranetHandler
 from cross_campus_handler import CrossCampusHandler
 
@@ -47,13 +48,15 @@ class CoscinSwitchApp(frenetic.App):
     self.arp_handler = ArpHandler(self, nib)
     self.intranet_handler = IntranetHandler(self, nib)
     self.cross_campus_handler = CrossCampusHandler(self, nib)
+    #self.broadcast_handler = BroadcastHandler(self, nib)
 
   ##################################
   # Common operations
 
   # Send payload to all ports  
-  def flood_indiscriminately(self, switch, payload):
-    output_actions = [ Output(Physical(p)) for p in self.nib.ports_on_switch(switch) ]
+  def flood(self, switch, except_port, payload):
+    flood_to_ports = [ p for p in self.nib.switches[switch] if p != except_port ]
+    output_actions = [ Output(Physical(p)) for p in flood_to_ports ]
     # Only bother to send the packet out if there are ports to send it out on.
     if output_actions:
       self.pkt_out(self.nib.switch_to_dpid(switch), payload, output_actions)
@@ -74,7 +77,8 @@ class CoscinSwitchApp(frenetic.App):
     pkt = arp.arp_ip(arp.ARP_REQUEST, src_mac, src_ip, "00:00:00:00:00:00", target_ip)
     payload = self.arp_payload(e, pkt)
     logging.info("Sending Arp Request to "+target_ip)
-    self.flood_indiscriminately(switch, payload)
+    # None means the request will go out every available port
+    self.flood(switch, None, payload)
 
   def send_arp_request_router_interface(self, switch, target_ip_net):
     # Note this may not or may not be a real host, but the reply will always come back to the switch anyway.
@@ -180,13 +184,10 @@ class CoscinSwitchApp(frenetic.App):
     logging.info("Switching to Router Learning mode")
     self.state = self.STATE_ROUTER_LEARNING
     self.waiting_for_router_arps = 0
-    # Send out ARP packets for all router interfaces to learn their mac addresses.  The
-    # packet_in_router will handle the replies as they arrive
-    for path in self.nib.alternate_paths():
-      for side in [ "ithaca", "nyc" ]:
-        if self.nib.switch_present(side):
-          self.send_arp_request_router_interface(side, path[side])
-          self.waiting_for_router_arps += 1
+    for side in [ "ithaca", "nyc" ]:
+      if self.nib.switch_present(side):
+        self.send_arp_request_router_interface(side, self.nib.actual_net_for(side))
+        self.waiting_for_router_arps += 1
 
   ########################
   # Normal Mode
@@ -200,6 +201,7 @@ class CoscinSwitchApp(frenetic.App):
   def normal_operation_policy(self):
     return Union([
       self.arp_handler.policy(),
+      #self.broadcast_handler.policy(),
       self.intranet_handler.policy(),
       self.cross_campus_handler.policy()
     ])
@@ -231,6 +233,7 @@ class CoscinSwitchApp(frenetic.App):
     logging.info("Received ("+str(p_eth.ethertype)+"): "+p_eth.src+"/"+src_ip+" -> ("+switch+", "+str(port)+") -> "+dst_ip)
 
     self.arp_handler.packet_in(dpid, port, payload)
+    #self.broadcast_handler.packet_in(dpid, port, payload)
     self.intranet_handler.packet_in(dpid, port, payload)
     self.cross_campus_handler.packet_in(dpid, port, payload)
 

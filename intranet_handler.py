@@ -37,16 +37,26 @@ class IntranetHandler():
     # Therefore, I'm letting this go for now because (1) intranet host
     # traffic is relatively rare (2) ARP cache entries usually timeout in 10 minutes anyway.  
     # L2Switch.policy.  
+
     for switch in self.nib.switches_present():
       dpid = self.nib.switch_to_dpid(switch)
-      for src_endhost in self.nib.get_endhosts(switch):
+
+      # The router interface is no different than a regular host with regard to intranet traffic.
+      all_hosts = self.nib.get_endhosts(switch)
+      all_hosts.append( (None, self.nib.router_port_for_switch(switch) , None, self.nib.router_ip_for_switch(switch) ) )
+
+      for src_endhost in all_hosts:
         (_, src_port, _, src_ip) = src_endhost
-        for dst_endhost in self.nib.get_endhosts(switch):
+        for dst_endhost in all_hosts:
           (_, dst_port, _, dst_ip) = dst_endhost
           # No rule for a host to itself, obviously
           if src_ip != dst_ip:
             policies.append(
               Filter(Policies.is_ip_from_to(src_ip, dst_ip) & Policies.at_switch_port(dpid, src_port) )
+              >> Send(dst_port)
+            )
+            policies.append(
+              Filter(Policies.is_arp_from_to(src_ip, dst_ip) & Policies.at_switch_port(dpid, src_port) )
               >> Send(dst_port)
             )
     return Union(policies)
