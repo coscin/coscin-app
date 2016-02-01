@@ -5,7 +5,7 @@
 # TODO: There's really no reason this has to be IP only.  Originally I designed it that
 # way so it doesn't overlap, but since we do pairwise mac rules, it doesn't really matter.
 
-import sys
+import sys, logging, copy
 sys.path.append('../frenetic/lang/python')
 import frenetic
 from frenetic.syntax import *
@@ -42,7 +42,7 @@ class IntranetHandler():
       dpid = self.nib.switch_to_dpid(switch)
 
       # The router interface is no different than a regular host with regard to intranet traffic.
-      all_hosts = self.nib.get_endhosts(switch)
+      all_hosts = copy.deepcopy(self.nib.get_endhosts(switch))
       all_hosts.append( (None, self.nib.router_port_for_switch(switch) , None, self.nib.router_ip_for_switch(switch) ) )
 
       for src_endhost in all_hosts:

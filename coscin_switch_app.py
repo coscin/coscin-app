@@ -88,6 +88,7 @@ class CoscinSwitchApp(frenetic.App):
     self.send_arp_request(switch, src_ip, dst_ip)
 
   def update_and_clear_dirty(self):
+    #logging.info("Refreshing policies")
     self.update(self.normal_operation_policy())
     self.nib.clear_dirty()
 
