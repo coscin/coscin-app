@@ -88,7 +88,6 @@ class CoscinSwitchApp(frenetic.App):
     self.send_arp_request(switch, src_ip, dst_ip)
 
   def update_and_clear_dirty(self):
-    #logging.info("Refreshing policies")
     self.update(self.normal_operation_policy())
     self.nib.clear_dirty()
 
@@ -239,7 +238,10 @@ class CoscinSwitchApp(frenetic.App):
     self.cross_campus_handler.packet_in(dpid, port, payload)
 
     if self.nib.is_dirty():
-      self.update_and_clear_dirty()
+      logging.info("Installing new policy")
+      # This doesn't actually wait two seconds, but it seems to serialize the updates so they occur in the right
+      # order, as opposed to just calling update_and_clear_dirty on its own.
+      IOLoop.instance().add_timeout(datetime.timedelta(seconds=2), self.update_and_clear_dirty)
 
   def set_preferred_path(self, new_preferred_path):
     # Send pings
